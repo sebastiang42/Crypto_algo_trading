@@ -1,11 +1,14 @@
 import jwt
 from cryptography.hazmat.primitives import serialization
 import time
+import datetime
 import http.client
 import json
 import pandas as pd
 import os
 from google.cloud import secretmanager
+from binance.client import Client
+import polars as pl
 
 def get_gcp_secret(project_id, secret_id):
     client = secretmanager.SecretManagerServiceClient()
@@ -20,7 +23,58 @@ coinbase_api_secret = get_gcp_secret(gcp_project_id, 'coinbase-api-secret').repl
 
 service_name   = "retail_rest_api_proxy"
 
+binance_client = Client(binance_api_key, binance_api_secret)
+
 # request_path   = "/api/v3/brokerage/products/BTC-USD/candles"
+
+def get_historical_klines_binance(symbol, interval, start_str, end_str=None):
+    """
+    Get historical kline data from Binance.
+    
+    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
+    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param start_str: The start date in 'yyyy-mm-dd' format
+    :param end_str: The end date in 'yyyy-mm-dd' format (optional)
+    :return: List of klines
+    """
+    klines = binance_client.get_historical_klines(symbol, interval, start_str, end_str)
+
+    column_names = [
+        "Open time",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "Close time",
+        "Quote asset volume",
+        "Number of trades",
+        "Taker buy base asset volume",
+        "Taker buy quote asset volume",
+        "ignore"
+        ]
+
+    # Create the DataFrame
+    df_klines = pl.DataFrame(klines, schema=column_names) \
+        .select(["Open time", "Open", "High", "Low", "Close", "Volume"]) \
+        .with_columns([
+            pl.col("Open").cast(pl.Float64),
+            pl.col("High").cast(pl.Float64),
+            pl.col("Low").cast(pl.Float64),
+            pl.col("Close").cast(pl.Float64),
+            pl.col("Volume").cast(pl.Float64)
+        ])
+    return df_klines
+
+def get_binance_symbols():
+    """
+    Retrieve all trading symbols available on Binance.
+    
+    :return: List of symbols
+    """
+    exchange_info = binance_client.get_exchange_info()
+    symbols = [symbol['symbol'] for symbol in exchange_info['symbols']]
+    return symbols
 
 def build_jwt(service, uri):
     private_key_bytes = coinbase_api_secret.encode('utf-8')
