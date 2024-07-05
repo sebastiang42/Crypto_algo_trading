@@ -10,6 +10,10 @@ from google.cloud import secretmanager
 from binance.client import Client
 import polars as pl
 
+
+#------------------------------------------------------------
+# Load secrets
+
 def get_gcp_secret(project_id, secret_id):
     client = secretmanager.SecretManagerServiceClient()
     response = client.access_secret_version(name=f"projects/{project_id}/secrets/{secret_id}/versions/latest")
@@ -25,58 +29,44 @@ service_name   = "retail_rest_api_proxy"
 
 binance_client = Client(binance_api_key, binance_api_secret)
 
-# request_path   = "/api/v3/brokerage/products/BTC-USD/candles"
+#------------------------------------------------------------
+# Exchange mappings
 
-def get_historical_klines_binance(symbol, interval, start_str, end_str=None):
-    """
-    Get historical kline data from Binance.
-    
-    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
-    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
-    :param start_str: The start date in 'yyyy-mm-dd' format
-    :param end_str: The end date in 'yyyy-mm-dd' format (optional)
-    :return: List of klines
-    """
-    klines = binance_client.get_historical_klines(symbol, interval, start_str, end_str)
+interval_map = {
+    '1m': {
+        'binance': '1m',
+        'coinbase': 'ONE_MINUTE'
+    },
+    '5m': {
+        'binance': '5m',
+        'coinbase': 'FIVE_MINUTE'
+    },
+    '15m': {
+        'binance': '15m',
+        'coinbase': 'FIFTEEN_MINUTE'
+    },
+    '30m': {
+        'binance': '30m',
+        'coinbase': 'THIRTY_MINUTE'
+    },
+    '1h': {
+        'binance': '1h',
+        'coinbase': 'ONE_HOUR'
+    },
+    '6h': {
+        'binance': '6h',
+        'coinbase': 'SIX_HOUR'
+    },
+    '1d': {
+        'binance': '1d',
+        'coinbase': 'ONE_DAY'
+    }
+}
 
-    column_names = [
-        "Open time",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-        "Close time",
-        "Quote asset volume",
-        "Number of trades",
-        "Taker buy base asset volume",
-        "Taker buy quote asset volume",
-        "ignore"
-        ]
+#------------------------------------------------------------
+# Various support functions
 
-    # Create the DataFrame
-    df_klines = pl.DataFrame(klines, schema=column_names) \
-        .select(["Open time", "Open", "High", "Low", "Close", "Volume"]) \
-        .with_columns([
-            pl.col("Open").cast(pl.Float64),
-            pl.col("High").cast(pl.Float64),
-            pl.col("Low").cast(pl.Float64),
-            pl.col("Close").cast(pl.Float64),
-            pl.col("Volume").cast(pl.Float64)
-        ])
-    return df_klines
-
-def get_binance_symbols():
-    """
-    Retrieve all trading symbols available on Binance.
-    
-    :return: List of symbols
-    """
-    exchange_info = binance_client.get_exchange_info()
-    symbols = [symbol['symbol'] for symbol in exchange_info['symbols']]
-    return symbols
-
-def build_jwt(service, uri):
+def build_jwt_coinbase(service, uri):
     private_key_bytes = coinbase_api_secret.encode('utf-8')
     private_key = serialization.load_pem_private_key(private_key_bytes, password=None)
     jwt_payload = {
@@ -95,13 +85,31 @@ def build_jwt(service, uri):
     )
     return jwt_token
 
-def list_products():
+#------------------------------------------------------------
+# List symbols
+
+def list_symbols_binance():
+    """
+    Retrieve all trading symbols available on Binance.
+    
+    :return: List of symbols
+    """
+    exchange_info = binance_client.get_exchange_info()
+    symbols = [symbol['symbol'] for symbol in exchange_info['symbols']]
+    return symbols
+
+def list_symbols_coinbase():
+    """
+    Retrieve all trading symbols available on Coinbase.
+    
+    :return: List of symbols
+    """
     request_host   = "api.coinbase.com"
     request_path   = "/api/v3/brokerage/products"
     request_method = "GET"
 
     uri = f"{request_method} {request_host}{request_path}"
-    jwt_token = build_jwt(service_name, uri)
+    jwt_token = build_jwt_coinbase(service_name, uri)
 
     conn = http.client.HTTPSConnection(request_host)
     payload = ''
@@ -113,18 +121,80 @@ def list_products():
     res = conn.getresponse()
     data = res.read()
 
-    products = pd.DataFrame(json.loads(data.decode("utf-8"))['products'])
+    symbols = pl.DataFrame(json.loads(data.decode("utf-8"))['products'])["product_id"].to_list()
 
-    return products
+    return symbols
 
-def get_candles(product, start, end, granularity):
+#------------------------------------------------------------
+# Download historical klines
+
+def get_klines_subset_binance(symbol, interval, start_date, end_date=None):
+    """
+    Get historical kline data from Binance. This one doesn't seem to have a 
+    limit on the number of candles you can request.
+    
+    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
+    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param start_str: The start date in 'yyyy-mm-dd' format
+    :param end_str: The end date in 'yyyy-mm-dd' format (optional)
+    :return: List of klines
+    """
+    klines = binance_client.get_historical_klines(symbol, interval, start_date, end_date)
+
+    column_names = [
+        "Open time",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "Close time",
+        "Quote asset volume",
+        "Number of trades",
+        "Taker buy base asset volume",
+        "Taker buy quote asset volume",
+        "ignore"
+        ]
+
+    # Create the DataFrame
+    df_klines = pl.DataFrame(klines, schema=column_names) \
+        .select(["Open time", "Low", "High", "Open", "Close", "Volume"]) \
+        .with_columns([
+            pl.col("Open").cast(pl.Float64),
+            pl.col("High").cast(pl.Float64),
+            pl.col("Low").cast(pl.Float64),
+            pl.col("Close").cast(pl.Float64),
+            pl.col("Volume").cast(pl.Float64)
+        ]) \
+        .rename({
+            "Open time": "start",
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Volume": "volume"
+        }) \
+        .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64))
+    return df_klines
+
+def get_klines_subset_coinbase(symbol, interval, start_unix, end_unix):
+    """
+    Get historical kline data from Coinbase. At most only 300 candles can 
+    be retrieved per API call
+    
+    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
+    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param start_unix: The start time in UNIX format
+    :param end_unix: The end time in UNIX format
+    :return: List of klines
+    """
     request_host   = "api.coinbase.com"
-    request_path_uri   = "/api/v3/brokerage/products/" + product + "/candles"
-    request_path    = request_path_uri + f"?start={start}&end={end}&granularity={granularity}"
+    request_path_uri   = f"/api/v3/brokerage/products/{symbol}/candles"
+    request_path    = request_path_uri + f"?start={start_unix}&end={end_unix}&granularity={interval}"
     request_method = "GET"
 
     uri = f"{request_method} {request_host}{request_path_uri}"
-    jwt_token = build_jwt(service_name, uri)
+    jwt_token = build_jwt_coinbase(service_name, uri)
 
     conn = http.client.HTTPSConnection(request_host)
     payload = ''
@@ -136,18 +206,18 @@ def get_candles(product, start, end, granularity):
     res = conn.getresponse()
     data = res.read()
 
-    candles = pd.DataFrame(json.loads(data.decode("utf-8"))['candles'])
+    df_klines = pl.DataFrame(json.loads(data.decode("utf-8"))['candles'])
 
-    return candles
+    return df_klines
 
-def fetch_historical_data(product, granularity, start_timestamp, end_timestamp, save_interval=60, print_interval=1):
+def get_historical_klines(symbol, granularity, start_timestamp, end_timestamp, exchange, save_interval=60, print_interval=1):
     # Define the time interval for each API call (300 candles per call)
     interval = 300 * 60
 
     # Check if the partial CSV file exists
     if os.path.isfile('historical_data_partial.csv'):
         # Load the existing data
-        historical_data = pd.read_csv('historical_data_partial.csv')
+        historical_data = pl.read_csv('historical_data_partial.csv')
 
         # Find the last timestamp in the loaded data
         last_timestamp = historical_data['start'].max()
@@ -159,7 +229,7 @@ def fetch_historical_data(product, granularity, start_timestamp, end_timestamp, 
 
     else:
         # Initialize an empty dataframe if the partial CSV file doesn't exist
-        historical_data = pd.DataFrame()
+        historical_data = pl.DataFrame()
 
     total_intervals = (end_timestamp - start_timestamp) // interval
     progress_interval = int(total_intervals * print_interval / 100)
@@ -173,10 +243,10 @@ def fetch_historical_data(product, granularity, start_timestamp, end_timestamp, 
         current_end = min(current_start + interval, end_timestamp)
 
         # Make API call
-        data = get_candles(product, current_start, current_end, granularity)
+        data = get_historical_klines_coinbase(symbol, current_start, current_end, granularity)
 
         # Concatenate the data to the main dataframe
-        historical_data = pd.concat([data, historical_data], ignore_index=True)
+        historical_data = pl.concat([data, historical_data], ignore_index=True)
 
         # Update the start timestamp for the next iteration
         current_start = current_end
