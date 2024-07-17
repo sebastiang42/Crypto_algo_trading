@@ -1,7 +1,7 @@
 import jwt
 from cryptography.hazmat.primitives import serialization
 import time
-import datetime
+from datetime import datetime, timezone
 import http.client
 import json
 import pandas as pd
@@ -206,7 +206,16 @@ def get_klines_subset_coinbase(symbol, interval, start_unix, end_unix):
     res = conn.getresponse()
     data = res.read()
 
-    df_klines = pl.DataFrame(json.loads(data.decode("utf-8"))['candles'])
+    df_klines = pl.DataFrame(json.loads(data.decode("utf-8"))['candles']) \
+        .reverse()\
+        .with_columns([
+            pl.col("open").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+            pl.col("volume").cast(pl.Float64),
+            pl.col("start").cast(pl.Int64)
+        ])
 
     return df_klines
 
@@ -215,9 +224,9 @@ def get_historical_klines(symbol, granularity, start_timestamp, end_timestamp, e
     interval = 300 * 60
 
     # Check if the partial CSV file exists
-    if os.path.isfile('historical_data_partial.csv'):
+    if os.path.isfile('historical_data/historical_data_partial.csv'):
         # Load the existing data
-        historical_data = pl.read_csv('historical_data_partial.csv')
+        historical_data = pl.read_csv('historical_data/historical_data_partial.csv')
 
         # Find the last timestamp in the loaded data
         last_timestamp = historical_data['start'].max()

@@ -19,7 +19,7 @@ end_date = '2021-01-31'
 
 klines_binance = get_klines_subset_binance(symbol, interval, start_date, end_date)
 
-klines_coinbase = get_klines_subset_coinbase(product='BTC-USD', start=int(time.time())-60*60*24*365*8, end=int(time.time())-60*60*24*365*8+60*600, granularity='ONE_MINUTE')
+klines_coinbase = get_klines_subset_coinbase(product='BTC-USD', interval='ONE_MINUTE', start=int(time.time())-60*60*24*365*8, end=int(time.time())-60*60*24*365*8+60*600)
 
 end_timestamp = int(time.time())
 # start_timestamp = end_timestamp - (120 * 300 * 60)
