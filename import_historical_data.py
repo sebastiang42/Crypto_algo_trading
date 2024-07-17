@@ -13,13 +13,13 @@ symbols_coinbase = list_symbols_coinbase()
 
 
 symbol = 'BTCUSDT'
-interval = Client.KLINE_INTERVAL_1MINUTE
+interval = '1m'
 start_date = '2021-01-01'
-end_date = '2021-01-31'
+end_date = '2021-01-06'
 
 klines_binance = get_klines_subset_binance(symbol, interval, start_date, end_date)
 
-klines_coinbase = get_klines_subset_coinbase(product='BTC-USD', interval='ONE_MINUTE', start=int(time.time())-60*60*24*365*8, end=int(time.time())-60*60*24*365*8+60*600)
+klines_coinbase = get_klines_subset_coinbase(symbol='BTC-USD', interval=interval, start_date=start_date, end_date=end_date)
 
 end_timestamp = int(time.time())
 # start_timestamp = end_timestamp - (120 * 300 * 60)

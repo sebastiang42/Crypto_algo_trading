@@ -135,11 +135,12 @@ def get_klines_subset_binance(symbol, interval, start_date, end_date=None):
     
     :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
     :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
-    :param start_str: The start date in 'yyyy-mm-dd' format
-    :param end_str: The end date in 'yyyy-mm-dd' format (optional)
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format (optional)
     :return: List of klines
     """
-    klines = binance_client.get_historical_klines(symbol, interval, start_date, end_date)
+    interval_binance = interval_map[interval]['binance']
+    klines = binance_client.get_historical_klines(symbol, interval_binance, start_date, end_date)
 
     column_names = [
         "Open time",
@@ -175,22 +176,28 @@ def get_klines_subset_binance(symbol, interval, start_date, end_date=None):
             "Volume": "volume"
         }) \
         .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64))
+    
+    df_klines = df_klines.slice(0, df_klines.shape[0] - 1)
+
     return df_klines
 
-def get_klines_subset_coinbase(symbol, interval, start_unix, end_unix):
+def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
     """
     Get historical kline data from Coinbase. At most only 300 candles can 
     be retrieved per API call
     
     :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
     :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
-    :param start_unix: The start time in UNIX format
-    :param end_unix: The end time in UNIX format
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format
     :return: List of klines
     """
-    request_host   = "api.coinbase.com"
-    request_path_uri   = f"/api/v3/brokerage/products/{symbol}/candles"
-    request_path    = request_path_uri + f"?start={start_unix}&end={end_unix}&granularity={interval}"
+    start_unix = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
+    end_unix = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()) - 60
+    interval_coinbase = interval_map[interval]['coinbase']
+
+    request_host = "api.coinbase.com"
+    request_path_uri = f"/api/v3/brokerage/products/{symbol}/candles"
     request_method = "GET"
 
     uri = f"{request_method} {request_host}{request_path_uri}"
@@ -202,20 +209,33 @@ def get_klines_subset_coinbase(symbol, interval, start_unix, end_unix):
     'Content-Type': 'application/json',
     'Authorization': f'Bearer {jwt_token}'
     }
-    conn.request(request_method, request_path, payload, headers)
-    res = conn.getresponse()
-    data = res.read()
 
-    df_klines = pl.DataFrame(json.loads(data.decode("utf-8"))['candles']) \
-        .reverse()\
-        .with_columns([
-            pl.col("open").cast(pl.Float64),
-            pl.col("high").cast(pl.Float64),
-            pl.col("low").cast(pl.Float64),
-            pl.col("close").cast(pl.Float64),
-            pl.col("volume").cast(pl.Float64),
-            pl.col("start").cast(pl.Int64)
-        ])
+    sub_start_unix = start_unix
+
+    df_klines = pl.DataFrame()
+
+    while sub_start_unix <= end_unix:
+        sub_end_unix = min(sub_start_unix + 60*299, end_unix)
+        request_path = request_path_uri + f"?start={sub_start_unix}&end={sub_end_unix}&granularity={interval_coinbase}"
+        conn.request(request_method, request_path, payload, headers)
+        res = conn.getresponse()
+        data = res.read()
+
+        df_klines = df_klines.vstack(pl.DataFrame(json.loads(data.decode("utf-8"))['candles']) \
+            .reverse()\
+            .with_columns([
+                pl.col("open").cast(pl.Float64),
+                pl.col("high").cast(pl.Float64),
+                pl.col("low").cast(pl.Float64),
+                pl.col("close").cast(pl.Float64),
+                pl.col("volume").cast(pl.Float64),
+                pl.col("start").cast(pl.Int64)
+            ]))
+        
+        sub_start_unix = sub_end_unix + 60
+
+        if sub_start_unix <= end_unix:
+            time.sleep(0.15)
 
     return df_klines
 
@@ -224,9 +244,9 @@ def get_historical_klines(symbol, granularity, start_timestamp, end_timestamp, e
     interval = 300 * 60
 
     # Check if the partial CSV file exists
-    if os.path.isfile('historical_data/historical_data_partial.csv'):
+    if os.path.isfile(f'historical_data/{exchange}_data_partial.csv'):
         # Load the existing data
-        historical_data = pl.read_csv('historical_data/historical_data_partial.csv')
+        historical_data = pl.read_csv(f'historical_data/{exchange}_data_partial.csv')
 
         # Find the last timestamp in the loaded data
         last_timestamp = historical_data['start'].max()
