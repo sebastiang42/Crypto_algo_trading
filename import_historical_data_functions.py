@@ -1,7 +1,7 @@
 import jwt
 from cryptography.hazmat.primitives import serialization
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, UTC
 import http.client
 import json
 import pandas as pd
@@ -9,6 +9,7 @@ import os
 from google.cloud import secretmanager
 from binance.client import Client
 import polars as pl
+import numpy as np
 
 
 #------------------------------------------------------------
@@ -60,6 +61,13 @@ interval_map = {
     '1d': {
         'binance': '1d',
         'coinbase': 'ONE_DAY'
+    }
+}
+
+symbol_map = {
+    'BTCUSD': {
+        'binance': 'BTCUSDT',
+        'coinbase': 'BTC-USD'
     }
 }
 
@@ -197,17 +205,17 @@ def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
     interval_coinbase = interval_map[interval]['coinbase']
 
     request_host = "api.coinbase.com"
-    request_path_uri = f"/api/v3/brokerage/products/{symbol}/candles"
+    request_path_uri = f"/api/v3/brokerage/market/products/{symbol}/candles"
     request_method = "GET"
 
-    uri = f"{request_method} {request_host}{request_path_uri}"
-    jwt_token = build_jwt_coinbase(service_name, uri)
+    # uri = f"{request_method} {request_host}{request_path_uri}"
+    # jwt_token = build_jwt_coinbase(service_name, uri)
 
     conn = http.client.HTTPSConnection(request_host)
     payload = ''
     headers = {
-    'Content-Type': 'application/json',
-    'Authorization': f'Bearer {jwt_token}'
+    'Content-Type': 'application/json'#,
+    # 'Authorization': f'Bearer {jwt_token}'
     }
 
     sub_start_unix = start_unix
@@ -219,18 +227,19 @@ def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
         request_path = request_path_uri + f"?start={sub_start_unix}&end={sub_end_unix}&granularity={interval_coinbase}"
         conn.request(request_method, request_path, payload, headers)
         res = conn.getresponse()
-        data = res.read()
+        data = json.loads(res.read().decode("utf-8"))['candles']
 
-        df_klines = df_klines.vstack(pl.DataFrame(json.loads(data.decode("utf-8"))['candles']) \
-            .reverse()\
-            .with_columns([
-                pl.col("open").cast(pl.Float64),
-                pl.col("high").cast(pl.Float64),
-                pl.col("low").cast(pl.Float64),
-                pl.col("close").cast(pl.Float64),
-                pl.col("volume").cast(pl.Float64),
-                pl.col("start").cast(pl.Int64)
-            ]))
+        if len(data) > 0:
+            df_klines = df_klines.vstack(pl.DataFrame(data) \
+                .reverse()\
+                .with_columns([
+                    pl.col("open").cast(pl.Float64),
+                    pl.col("high").cast(pl.Float64),
+                    pl.col("low").cast(pl.Float64),
+                    pl.col("close").cast(pl.Float64),
+                    pl.col("volume").cast(pl.Float64),
+                    pl.col("start").cast(pl.Int64)
+                ]))
         
         sub_start_unix = sub_end_unix + 60
 
@@ -239,61 +248,61 @@ def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
 
     return df_klines
 
-def get_historical_klines(symbol, granularity, start_timestamp, end_timestamp, exchange, save_interval=60, print_interval=1):
-    # Define the time interval for each API call (300 candles per call)
-    interval = 300 * 60
+def get_klines_subset(symbol, interval, start_date, end_date, exchange):
+    if exchange == 'coinbase':
+        df_klines = get_klines_subset_coinbase(symbol, interval, start_date, end_date)
+    elif exchange == 'binance':
+        df_klines = get_klines_subset_binance(symbol, interval, start_date, end_date)
+    return df_klines
 
-    # Check if the partial CSV file exists
-    if os.path.isfile(f'historical_data/{exchange}_data_partial.csv'):
-        # Load the existing data
-        historical_data = pl.read_csv(f'historical_data/{exchange}_data_partial.csv')
+def get_historical_klines(symbol, interval, start_date, end_date, exchange, step_size=5):
+    symbol_exchange = symbol_map[symbol][exchange]
+    partial_csv_name = f'historical_data/{exchange}_{symbol_exchange}_{interval}_data_partial.csv'
+    complete_csv_name = f'historical_data/{exchange}_{symbol_exchange}_{interval}_data_raw.csv'
 
-        # Find the last timestamp in the loaded data
-        last_timestamp = historical_data['start'].max()
+    start_datetime = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
-        # Set the start timestamp to the next interval after the last timestamp
-        start_timestamp = last_timestamp + 60
+    if os.path.isfile(partial_csv_name):
+        last_timestamp = pl.read_csv(partial_csv_name, columns=['start'])['start'][-1]
 
-        print(f"Resuming from timestamp: {last_timestamp}")
-
+        sub_start_datetime = datetime.fromtimestamp(last_timestamp, UTC) + timedelta(days=1)
+        print(f"Resuming from: {sub_start_datetime.strftime('%Y-%m-%d')}")
     else:
-        # Initialize an empty dataframe if the partial CSV file doesn't exist
-        historical_data = pl.DataFrame()
+        pl.DataFrame(schema=["start", "low", "high", "open", "close", "volume"])\
+            .write_csv(partial_csv_name)
+        
+        sub_start_datetime = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        print(f"Starting from: {sub_start_datetime}")
+    
+    end_datetime = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
-    total_intervals = (end_timestamp - start_timestamp) // interval
-    progress_interval = int(total_intervals * print_interval / 100)
+    total_steps = int(np.ceil((end_datetime - start_datetime) / timedelta(days=step_size)))
+    completed_steps_this_run = 0
 
     start_time = time.time()
 
-    # Loop through time intervals and make API calls
-    interval_counter = 0
-    current_start = start_timestamp
-    while current_start < end_timestamp:
-        current_end = min(current_start + interval, end_timestamp)
+    with open(partial_csv_name, 'a') as f:
+        while sub_start_datetime < end_datetime:
+            sub_start_date = sub_start_datetime.strftime('%Y-%m-%d')
+            sub_end_datetime = min(sub_start_datetime + timedelta(days=step_size), end_datetime)
+            sub_end_date = sub_end_datetime.strftime('%Y-%m-%d')
 
-        # Make API call
-        data = get_historical_klines_coinbase(symbol, current_start, current_end, granularity)
+            sub_df_klines = get_klines_subset(symbol_exchange, interval, sub_start_date, sub_end_date, exchange)
 
-        # Concatenate the data to the main dataframe
-        historical_data = pl.concat([data, historical_data], ignore_index=True)
+            sub_df_klines.write_csv(f, include_header=False)
 
-        # Update the start timestamp for the next iteration
-        current_start = current_end
+            completed_steps = int(np.ceil((sub_end_datetime - start_datetime) / timedelta(days=step_size)))
+            completed_steps_this_run += 1
 
-        interval_counter += 1
+            end_time = time.time()
 
-        # Save the dataframe at regular intervals
-        if interval_counter % save_interval == 0:
-            historical_data.to_csv('historical_data_partial.csv', index=False)
-        
-        if interval_counter % progress_interval == 0:
-            completion_percentage = (interval_counter / total_intervals) * 100
-            elapsed_time = time.time() - start_time
-            print(f"{completion_percentage:.2f}% complete | Elapsed Time: {elapsed_time:.2f} seconds")
-
-        # Sleep to avoid API rate limits (adjust as needed)
-        time.sleep(0.5)
+            print(f"Step {completed_steps}/{total_steps} complete ({round(100*completed_steps/total_steps, 1)}%)." +
+                  f" Estimated time remaining: {round((end_time - start_time) * ((total_steps / completed_steps_this_run) - 1), 1)} s")
+            
+            sub_start_datetime = sub_end_datetime
     
-    historical_data.to_csv('historical_data.csv', index=False)
-
-    return historical_data
+    if not os.path.isfile(complete_csv_name):
+        os.rename(partial_csv_name, complete_csv_name)
+        print(f"Data import complete: {exchange} | {symbol} {interval} from {start_date} to {end_date}")
+    else:
+        print("Data import complete, but raw data file already exists. Please overwrite manually")

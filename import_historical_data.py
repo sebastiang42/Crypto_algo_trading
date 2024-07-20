@@ -7,29 +7,26 @@
 # import numpy as np
 from import_historical_data_functions import *
 
-
+#####################################################################
+# list symbols (i.e., trading pairs) available at different exchanges
 symbols_binance = list_symbols_binance()
 symbols_coinbase = list_symbols_coinbase()
 
-
-symbol = 'BTCUSDT'
+#####################################################################
+# Pull smaller subsets of kline data from the different exchanges. 
+# Useful for determining how far back data is available for a given exchange + symbol
 interval = '1m'
-start_date = '2021-01-01'
-end_date = '2021-01-06'
+start_date = '2017-09-01'
+end_date = '2017-09-02'
 
-klines_binance = get_klines_subset_binance(symbol, interval, start_date, end_date)
+klines_binance = get_klines_subset_binance(symbol='BTCUSDT', interval=interval, start_date=start_date, end_date=end_date)
 
 klines_coinbase = get_klines_subset_coinbase(symbol='BTC-USD', interval=interval, start_date=start_date, end_date=end_date)
 
-end_timestamp = int(time.time())
-# start_timestamp = end_timestamp - (120 * 300 * 60)
-start_timestamp = end_timestamp - (8 * 365 * 24 * 60 * 60) # 8 years
-
-product = "BTC-USD"
-granularity = "ONE_MINUTE"
-
-historical_data = fetch_historical_data(product, granularity, start_timestamp, end_timestamp)
-
-historical_data
-
-help(historical_data['start'].is_monotonic_decreasing)
+#####################################################################
+# Download and save longer periods of data
+# Start dates vary depending on how far back data is available for each exchange
+symbol = 'BTCUSD'
+interval = '1m'
+get_historical_klines(symbol=symbol, interval=interval, start_date='2016-01-01', end_date='2024-07-01', exchange='coinbase')
+get_historical_klines(symbol=symbol, interval=interval, start_date='2017-09-01', end_date='2024-07-01', exchange='binance')
