@@ -8,8 +8,10 @@ import pandas as pd
 import os
 from google.cloud import secretmanager
 from binance.client import Client
+from pybit.unified_trading import HTTP
 import polars as pl
 import numpy as np
+from exchange_maps import *
 
 
 #------------------------------------------------------------
@@ -29,47 +31,7 @@ coinbase_api_secret = get_gcp_secret(gcp_project_id, 'coinbase-api-secret').repl
 service_name   = "retail_rest_api_proxy"
 
 binance_client = Client(binance_api_key, binance_api_secret)
-
-#------------------------------------------------------------
-# Exchange mappings
-
-interval_map = {
-    '1m': {
-        'binance': '1m',
-        'coinbase': 'ONE_MINUTE'
-    },
-    '5m': {
-        'binance': '5m',
-        'coinbase': 'FIVE_MINUTE'
-    },
-    '15m': {
-        'binance': '15m',
-        'coinbase': 'FIFTEEN_MINUTE'
-    },
-    '30m': {
-        'binance': '30m',
-        'coinbase': 'THIRTY_MINUTE'
-    },
-    '1h': {
-        'binance': '1h',
-        'coinbase': 'ONE_HOUR'
-    },
-    '6h': {
-        'binance': '6h',
-        'coinbase': 'SIX_HOUR'
-    },
-    '1d': {
-        'binance': '1d',
-        'coinbase': 'ONE_DAY'
-    }
-}
-
-symbol_map = {
-    'BTCUSD': {
-        'binance': 'BTCUSDT',
-        'coinbase': 'BTC-USD'
-    }
-}
+bybit_client = HTTP(testnet=False)
 
 #------------------------------------------------------------
 # Various support functions
@@ -248,11 +210,78 @@ def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
 
     return df_klines
 
+def get_klines_subset_bybit(symbol, interval, start_date, end_date, category='linear'):
+    """
+    Get historical kline data from Bybit. At most only 1000 candles can 
+    be retrieved per API call
+    
+    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
+    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format
+    :param category: The type of product (must be correct for the symbol)
+    :return: List of klines
+    """
+    start_unix_ms = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000)
+    end_unix_ms = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000) - 60000
+    interval_bybit = interval_map[interval]['bybit']
+
+    sub_start_unix_ms = start_unix_ms
+
+    column_names = [
+        "start",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover"
+        ]
+
+    df_klines = pl.DataFrame()
+
+    while sub_start_unix_ms <= end_unix_ms:
+        sub_end_unix_ms = min(sub_start_unix_ms + 60000*999, end_unix_ms)
+        
+        response = bybit_client.get_kline(
+            category=category,
+            symbol=symbol,
+            interval=interval_bybit,
+            start=sub_start_unix_ms,
+            end=sub_end_unix_ms,
+            limit=1000
+        )
+
+        data = response['result']['list']
+
+        if len(data) > 0:
+            df_klines = df_klines.vstack(pl.DataFrame(data, schema=column_names) \
+                .select(["start", "low", "high", "open", "close", "volume"])\
+                .reverse()\
+                .with_columns([
+                    pl.col("open").cast(pl.Float64),
+                    pl.col("high").cast(pl.Float64),
+                    pl.col("low").cast(pl.Float64),
+                    pl.col("close").cast(pl.Float64),
+                    pl.col("volume").cast(pl.Float64),
+                    pl.col("start").cast(pl.Int64)
+                ])\
+                .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64)))
+        
+        sub_start_unix_ms = sub_end_unix_ms + 60000
+
+        if sub_start_unix_ms <= end_unix_ms:
+            time.sleep(0.15)
+
+    return df_klines
+
 def get_klines_subset(symbol, interval, start_date, end_date, exchange):
     if exchange == 'coinbase':
         df_klines = get_klines_subset_coinbase(symbol, interval, start_date, end_date)
     elif exchange == 'binance':
         df_klines = get_klines_subset_binance(symbol, interval, start_date, end_date)
+    elif exchange == 'bybit':
+        df_klines = get_klines_subset_bybit(symbol, interval, start_date, end_date)
     return df_klines
 
 def get_historical_klines(symbol, interval, start_date, end_date, exchange, step_size=5):
