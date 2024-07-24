@@ -11,8 +11,10 @@ from binance.client import Client
 from pybit.unified_trading import HTTP
 import polars as pl
 import numpy as np
+import requests
 from exchange_maps import *
 
+OKX_API_URL = "https://www.okx.com"
 
 #------------------------------------------------------------
 # Load secrets
@@ -103,8 +105,8 @@ def get_klines_subset_binance(symbol, interval, start_date, end_date=None):
     Get historical kline data from Binance. This one doesn't seem to have a 
     limit on the number of candles you can request.
     
-    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
-    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
     :param start_date: The start date in 'yyyy-mm-dd' format
     :param end_date: The end date in 'yyyy-mm-dd' format (optional)
     :return: List of klines
@@ -156,8 +158,8 @@ def get_klines_subset_coinbase(symbol, interval, start_date, end_date):
     Get historical kline data from Coinbase. At most only 300 candles can 
     be retrieved per API call
     
-    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
-    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
     :param start_date: The start date in 'yyyy-mm-dd' format
     :param end_date: The end date in 'yyyy-mm-dd' format
     :return: List of klines
@@ -215,8 +217,8 @@ def get_klines_subset_bybit(symbol, interval, start_date, end_date, category='li
     Get historical kline data from Bybit. At most only 1000 candles can 
     be retrieved per API call
     
-    :param symbol: The trading pair symbol (e.g., 'BTCUSDT')
-    :param interval: The interval for klines (e.g., Client.KLINE_INTERVAL_1HOUR)
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
     :param start_date: The start date in 'yyyy-mm-dd' format
     :param end_date: The end date in 'yyyy-mm-dd' format
     :param category: The type of product (must be correct for the symbol)
@@ -275,6 +277,131 @@ def get_klines_subset_bybit(symbol, interval, start_date, end_date, category='li
 
     return df_klines
 
+def get_klines_subset_okx(symbol, interval, start_date, end_date):
+    """
+    Get historical kline data from OKX. At most only 100 candles can 
+    be retrieved per API call
+    
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format
+    :return: List of klines
+    """
+    start_unix_ms = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000) - 60000
+    end_unix_ms = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000)
+    interval_okx = interval_map[interval]['okx']
+
+    sub_start_unix_ms = start_unix_ms
+
+    column_names = [
+        "start",
+        "open",
+        "high",
+        "low",
+        "close",
+        "confirm"
+        ]
+
+    df_klines = pl.DataFrame()
+
+    params = {
+        'instId': symbol,
+        'bar': interval_okx
+    }
+
+    while sub_start_unix_ms < (end_unix_ms - 60000):
+        sub_end_unix_ms = min(sub_start_unix_ms + 60000*101, end_unix_ms)
+
+        params['before'] = str(sub_start_unix_ms)
+        params['after'] = str(sub_end_unix_ms)
+        
+        response = requests.get(f"{OKX_API_URL}/api/v5/market/history-index-candles", params=params)
+
+        data = response.json()['data']
+
+        if len(data) > 0:
+            df_klines = df_klines.vstack(pl.DataFrame(data, schema=column_names) \
+                .select(["start", "low", "high", "open", "close"])\
+                .reverse()\
+                .with_columns([
+                    pl.col("open").cast(pl.Float64),
+                    pl.col("high").cast(pl.Float64),
+                    pl.col("low").cast(pl.Float64),
+                    pl.col("close").cast(pl.Float64),
+                    pl.col("start").cast(pl.Int64)
+                ])\
+                .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64)))
+        
+        sub_start_unix_ms += 60000 * 100
+
+        if sub_start_unix_ms <= end_unix_ms:
+            time.sleep(0.22)
+
+    return df_klines
+
+def get_klines_subset_digifinex(symbol, interval, start_date, end_date):
+    """
+    Get historical kline data from Digifinex. At most only 500 candles can 
+    be retrieved per API call
+    
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format
+    :return: List of klines
+    """
+    start_unix = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp())
+    end_unix = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()) - 60
+    interval_digifinex = interval_map[interval]['digifinex']
+
+    sub_start_unix = start_unix
+
+    column_names = [
+        "start",
+        "volume",
+        "close",
+        "high",
+        "low",
+        "open"
+        ]
+
+    df_klines = pl.DataFrame()
+
+    params = {
+        'symbol': symbol,
+        'period': interval_digifinex
+    }
+
+    while sub_start_unix <= end_unix:
+        sub_end_unix = min(sub_start_unix + 60*499, end_unix)
+
+        params['start_time'] = sub_start_unix
+        params['end_time'] = sub_end_unix
+        
+        response = requests.get('https://openapi.digifinex.com/v3/kline', params=params)
+
+        data = response.json()['data']
+
+        if len(data) > 0:
+            df_klines = df_klines.vstack(pl.DataFrame(data, schema=column_names) \
+                .select(["start", "low", "high", "open", "close", "volume"])\
+                .with_columns([
+                    pl.col("open").cast(pl.Float64),
+                    pl.col("high").cast(pl.Float64),
+                    pl.col("low").cast(pl.Float64),
+                    pl.col("close").cast(pl.Float64),
+                    pl.col("volume").cast(pl.Float64),
+                    pl.col("start").cast(pl.Int64)
+                ]))
+        
+        sub_start_unix += 60 * 500
+
+        if sub_start_unix <= end_unix:
+            time.sleep(0.15)
+
+    return df_klines
+
 def get_klines_subset(symbol, interval, start_date, end_date, exchange):
     if exchange == 'coinbase':
         df_klines = get_klines_subset_coinbase(symbol, interval, start_date, end_date)
@@ -282,6 +409,10 @@ def get_klines_subset(symbol, interval, start_date, end_date, exchange):
         df_klines = get_klines_subset_binance(symbol, interval, start_date, end_date)
     elif exchange == 'bybit':
         df_klines = get_klines_subset_bybit(symbol, interval, start_date, end_date)
+    elif exchange == 'okx':
+        df_klines = get_klines_subset_okx(symbol, interval, start_date, end_date)
+    elif exchange == 'digifinex':
+        df_klines = get_klines_subset_digifinex(symbol, interval, start_date, end_date)
     return df_klines
 
 def get_historical_klines(symbol, interval, start_date, end_date, exchange, step_size=5):
@@ -306,6 +437,7 @@ def get_historical_klines(symbol, interval, start_date, end_date, exchange, step
     end_datetime = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc)
 
     total_steps = int(np.ceil((end_datetime - start_datetime) / timedelta(days=step_size)))
+    total_steps_this_run = total_steps - int(np.ceil((sub_start_datetime - start_datetime) / timedelta(days=step_size)) - 1)
     completed_steps_this_run = 0
 
     start_time = time.time()
@@ -326,7 +458,7 @@ def get_historical_klines(symbol, interval, start_date, end_date, exchange, step
             end_time = time.time()
 
             print(f"Step {completed_steps}/{total_steps} complete ({round(100*completed_steps/total_steps, 1)}%)." +
-                  f" Estimated time remaining: {round((end_time - start_time) * ((total_steps / completed_steps_this_run) - 1), 1)} s")
+                  f" Estimated time remaining: {round((end_time - start_time) * ((total_steps_this_run / completed_steps_this_run) - 1), 1)} s")
             
             sub_start_datetime = sub_end_datetime
     
