@@ -1,3 +1,4 @@
 .venv/
 historical_data/
 __pycache__
+testing.py

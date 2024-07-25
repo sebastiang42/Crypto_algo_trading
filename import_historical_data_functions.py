@@ -402,6 +402,70 @@ def get_klines_subset_digifinex(symbol, interval, start_date, end_date):
 
     return df_klines
 
+def get_klines_subset_bitget(symbol, interval, start_date, end_date):
+    """
+    Get historical kline data from Bitget. At most only 100 candles can 
+    be retrieved per API call
+    
+    :param symbol: The trading pair symbol
+    :param interval: The interval for klines
+    :param start_date: The start date in 'yyyy-mm-dd' format
+    :param end_date: The end date in 'yyyy-mm-dd' format
+    :return: List of klines
+    """
+    start_unix_ms = int(datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000)
+    end_unix_ms = int(datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()*1000)
+    interval_bitget = interval_map[interval]['bitget']
+
+    sub_start_unix_ms = start_unix_ms
+
+    column_names = [
+        "start",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "volume2",
+        "volume3"
+        ]
+
+    df_klines = pl.DataFrame()
+
+    params = {
+        'symbol': symbol,
+        'granularity': interval_bitget
+    }
+
+    while sub_start_unix_ms < end_unix_ms:
+        sub_end_unix_ms = min(sub_start_unix_ms + 60000*200, end_unix_ms)
+
+        params['endTime'] = str(sub_end_unix_ms)
+        params['limit'] = int((sub_end_unix_ms - sub_start_unix_ms) / 60000)
+        
+        response = requests.get("https://api.bitget.com/api/v2/spot/market/history-candles", params=params)
+
+        data = response.json()['data']
+
+        if len(data) > 0:
+            df_klines = df_klines.vstack(pl.DataFrame(data, schema=column_names) \
+                .select(["start", "low", "high", "open", "close", "volume"])\
+                .with_columns([
+                    pl.col("open").cast(pl.Float64),
+                    pl.col("high").cast(pl.Float64),
+                    pl.col("low").cast(pl.Float64),
+                    pl.col("close").cast(pl.Float64),
+                    pl.col("start").cast(pl.Int64)
+                ])\
+                .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64)))
+        
+        sub_start_unix_ms += 60000 * 200
+
+        if sub_start_unix_ms <= end_unix_ms:
+            time.sleep(0.07)
+
+    return df_klines
+
 def get_klines_subset(symbol, interval, start_date, end_date, exchange):
     if exchange == 'coinbase':
         df_klines = get_klines_subset_coinbase(symbol, interval, start_date, end_date)
@@ -413,6 +477,8 @@ def get_klines_subset(symbol, interval, start_date, end_date, exchange):
         df_klines = get_klines_subset_okx(symbol, interval, start_date, end_date)
     elif exchange == 'digifinex':
         df_klines = get_klines_subset_digifinex(symbol, interval, start_date, end_date)
+    elif exchange == 'bitget':
+        df_klines = get_klines_subset_bitget(symbol, interval, start_date, end_date)
     return df_klines
 
 def get_historical_klines(symbol, interval, start_date, end_date, exchange, step_size=5):
