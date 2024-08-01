@@ -455,6 +455,7 @@ def get_klines_subset_bitget(symbol, interval, start_date, end_date):
                     pl.col("high").cast(pl.Float64),
                     pl.col("low").cast(pl.Float64),
                     pl.col("close").cast(pl.Float64),
+                    pl.col("volume").cast(pl.Float64),
                     pl.col("start").cast(pl.Int64)
                 ])\
                 .with_columns((pl.col("start") / 1000).alias("start").cast(pl.Int64)))

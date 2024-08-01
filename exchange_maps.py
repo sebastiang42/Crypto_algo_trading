@@ -88,5 +88,13 @@ symbol_map = {
         'okx': 'SOL-USDT',
         'digifinex': 'sol_usdt',
         'bitget': 'SOLUSDT'
+    },
+    'DOGEUSD': {
+        'binance': 'DOGEUSDT',
+        'coinbase': 'DOGE-USD',
+        'bybit': 'DOGEUSDT',
+        'okx': 'DOGE-USDT',
+        'digifinex': 'doge_usdt',
+        'bitget': 'DOGEUSDT'
     }
 }
