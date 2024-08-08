@@ -534,3 +534,76 @@ def get_historical_klines(symbol, interval, start_date, end_date, exchange, step
         print(f"Data import complete: {exchange} | {symbol} {interval} from {start_date} to {end_date}")
     else:
         print("Data import complete, but raw data file already exists. Please overwrite manually")
+
+def request_missing_data(symbol, interval, exchange):
+    '''
+    Goes through the raw data collected and saved by the get_historical_klines function, 
+    identifies missing rows, and re-requests the missing data, adding it to the raw data 
+    file if any new data is found. Data can sometimes be missing because it is simply 
+    unavailable, while other times it is because something went wrong when collecting 
+    the data. This is meant to address the latter case. The former case will be addressed 
+    later with imputation.
+    '''
+    symbol_exchange = symbol_map[symbol][exchange]
+    raw_file = f'historical_data/{exchange}_{symbol_exchange}_{interval}_data_raw.csv'
+
+    if not os.path.isfile(raw_file):
+        print("Raw file does not exist")
+        return None
+
+    historical_data = pl.read_csv(raw_file)
+    if historical_data['volume'].dtype != pl.Float64:
+        historical_data = historical_data.with_columns(historical_data['volume'].cast(pl.Float64).alias('volume'))
+    
+    historical_data = historical_data.unique(subset=['start']).sort(by='start')
+    initial_length = len(historical_data)
+
+    min_timestamp = historical_data['start'].min()
+    max_timestamp = historical_data['start'].max()
+    all_timestamps = pl.DataFrame({
+        'start': range(min_timestamp, max_timestamp + 1, 60)
+    })
+
+    # Find the missing timestamps
+    missing_timestamps = all_timestamps.join(historical_data.select('start'), on='start', how='anti')
+
+    days_with_missing_data = missing_timestamps.with_columns(pl.from_epoch('start', time_unit='s'))\
+        .with_columns(pl.col('start').dt.strftime('%Y-%m-%d').alias('start'))\
+        .unique()\
+        .to_series()
+    
+    print(f"{len(days_with_missing_data)} dates identified with missing data for {raw_file}")
+    
+    for start_date in days_with_missing_data:
+        end_datetime = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=timezone.utc) + timedelta(days=1)
+        end_date = end_datetime.strftime('%Y-%m-%d')
+
+        sub_df_klines = get_klines_subset(symbol_exchange, interval, start_date, end_date, exchange)
+
+        if 'volume' not in sub_df_klines.columns:
+            sub_df_klines = sub_df_klines.with_columns(pl.lit(None).cast(pl.Float64).alias('volume'))
+
+        historical_data = pl.concat([historical_data, sub_df_klines])
+    
+    historical_data = historical_data.unique(subset=['start']).sort(by='start')
+    final_length = len(historical_data)
+
+    if final_length > initial_length:
+        print(f"New rows added to {raw_file}")
+    else:
+        print(f"{raw_file} unchanged")
+
+    return historical_data
+
+def repair_raw_data(interval='1m'):
+    '''
+    Goes through all raw data files and attempts to re-request missing data, then updates the files.
+    '''
+    for symbol in symbol_map.keys():
+        for exchange in symbol_map[symbol].keys():
+            symbol_exchange = symbol_map[symbol][exchange]
+            raw_file = f'historical_data/{exchange}_{symbol_exchange}_{interval}_data_raw.csv'
+
+            repaired_data = request_missing_data(symbol, interval, exchange)
+
+            repaired_data.write_csv(raw_file)

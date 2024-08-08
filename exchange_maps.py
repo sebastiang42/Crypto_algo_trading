@@ -96,5 +96,29 @@ symbol_map = {
         'okx': 'DOGE-USDT',
         'digifinex': 'doge_usdt',
         'bitget': 'DOGEUSDT'
+    },
+    'ADAUSD': {
+        'binance': 'ADAUSDT',
+        'coinbase': 'ADA-USD',
+        'bybit': 'ADAUSDT',
+        'okx': 'ADA-USDT',
+        'digifinex': 'ada_usdt',
+        'bitget': 'ADAUSDT'
+    },
+    'TRXUSD': {
+        'binance': 'TRXUSDT',
+        # 'coinbase': 'ADA-USD',
+        'bybit': 'TRXUSDT',
+        'okx': 'TRX-USDT',
+        'digifinex': 'trx_usdt',
+        'bitget': 'TRXUSDT'
+    },
+    'AVAXUSD': {
+        'binance': 'AVAXUSDT',
+        'coinbase': 'AVAX-USD',
+        'bybit': 'AVAXUSDT',
+        'okx': 'AVAX-USDT',
+        'digifinex': 'avax_usdt',
+        'bitget': 'AVAXUSDT'
     }
 }

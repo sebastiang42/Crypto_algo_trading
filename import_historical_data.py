@@ -99,3 +99,11 @@ get_historical_klines(symbol=symbol, interval=interval, start_date='2021-10-01',
 get_historical_klines(symbol=symbol, interval=interval, start_date='2020-10-01', end_date='2024-07-01', exchange='okx')
 get_historical_klines(symbol=symbol, interval=interval, start_date='2021-04-01', end_date='2024-07-01', exchange='digifinex')
 get_historical_klines(symbol=symbol, interval=interval, start_date='2021-12-01', end_date='2024-07-01', exchange='bitget')
+
+
+#####################################################################
+# Repair the above collected data by re-requesting missing rows. If 
+# these rows are unavailable for the corresponding exchange, then the 
+# data will remain unchanged
+
+repair_raw_data()
