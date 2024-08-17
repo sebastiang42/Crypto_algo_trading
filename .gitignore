@@ -1,5 +1,6 @@
 .venv/
 historical_data/
+preprocessed_data/
 __pycache__
 testing.py
 *.lyx
